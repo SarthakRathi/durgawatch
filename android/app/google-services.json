@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "832133862363",
+    "project_id": "durgawatch-87623",
+    "storage_bucket": "durgawatch-87623.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:832133862363:android:bd63b8a252b52c49764dfe",
+        "android_client_info": {
+          "package_name": "com.example.durgawatchf"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA3s7TxlGcZTc31KpD7Crwf9vmO4VhvJDQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
