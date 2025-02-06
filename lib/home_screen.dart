@@ -17,9 +17,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // -------------------------------------------------------------
-  // 1) SPEECH & STAGE FIELDS
-  // -------------------------------------------------------------
   bool _alertModeOn = false;
   bool _isListening = false;
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -53,9 +50,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // -------------------------------------------------------------
-  // 2) ALERT BANNER: IF I AM A CONTACT FOR SOMEONE ELSE
-  // -------------------------------------------------------------
   Widget _buildContactAlertBanner() {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return const SizedBox();
@@ -75,7 +69,6 @@ class _HomeScreenState extends State<HomeScreen> {
           return Text('Stream error: ${snapshot.error}');
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          // I'm not a contact for any stage2/3 threat
           return const SizedBox();
         }
 
@@ -138,9 +131,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // -------------------------------------------------------------
-  // 3) LOCATION & STAGE METHODS
-  // -------------------------------------------------------------
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -227,7 +217,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // gather contacts
     final contactsSnap = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -241,7 +230,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // get userName
     final userDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -249,7 +237,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final userData = userDoc.data() ?? {};
     final userName = userData['fullName'] ?? 'Unknown';
 
-    // update /threats
     await FirebaseFirestore.instance.collection('threats').doc(user.uid).set({
       'userId': user.uid,
       'userName': userName,
@@ -375,9 +362,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
-  // -------------------------------------------------------------
-  // 4) BUILD
-  // -------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -464,15 +448,13 @@ class _HomeScreenState extends State<HomeScreen> {
                         description: 'Maximum security',
                         color: Colors.red,
                       ),
-
-                      // **NEW** policeman card at last
+                      // New policeman card
                       _buildGridItem(
                         title: 'Police View',
                         assetPath: 'assets/images/policeman.png',
                         description: 'View police interface',
                         onTap: () {
-                          // TODO: Add logic or route for policeman view
-                          // e.g., Navigator.pushNamed(context, '/policeView');
+                          Navigator.pushNamed(context, '/policeView');
                         },
                       ),
                     ],
@@ -486,9 +468,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // -------------------------------------------------------------
-  // 5) ACTIVE STAGE CARD
-  // -------------------------------------------------------------
   Widget _buildActiveStageCard() {
     final currentStage = _activeStageNumber!;
     return Container(
@@ -577,9 +556,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // -------------------------------------------------------------
-  // 6) ALERT MODE (SPEECH)
-  // -------------------------------------------------------------
   Widget _buildAlertModeSection() {
     return Container(
       decoration: BoxDecoration(
@@ -652,9 +628,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // -------------------------------------------------------------
-  // 7) GRID ITEMS
-  // -------------------------------------------------------------
   Widget _buildGridItem({
     required String title,
     required String assetPath,

@@ -17,12 +17,10 @@ class _MapScreenState extends State<MapScreen> {
   bool _isLoadingLocation = true;
   LatLng? _myCurrentLatLng;
 
-  // For showing threats
+  String? troubleUid;
+
   Set<Circle> _stage2Circles = {};
   Set<Marker> _stage3Markers = {};
-
-  // If we pass a specific user UID:
-  String? troubleUid;
 
   @override
   void initState() {
@@ -33,11 +31,10 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Read arguments (if any)
+    // read arguments
     troubleUid = ModalRoute.of(context)?.settings.arguments as String?;
   }
 
-  // Get my own device location => center map
   Future<void> _initLocation() async {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -59,9 +56,9 @@ class _MapScreenState extends State<MapScreen> {
         return;
       }
 
-      final pos = await Geolocator.getCurrentPosition();
+      final position = await Geolocator.getCurrentPosition();
       setState(() {
-        _myCurrentLatLng = LatLng(pos.latitude, pos.longitude);
+        _myCurrentLatLng = LatLng(position.latitude, position.longitude);
         _isLoadingLocation = false;
       });
     } catch (e) {
@@ -73,22 +70,21 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     if (_isLoadingLocation) {
       return Scaffold(
-        appBar: AppBar(title: Text('Map')),
-        body: Center(child: CircularProgressIndicator()),
+        appBar: AppBar(title: const Text('Threat Map')),
+        body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Threat Map')),
+      appBar: AppBar(
+        title: const Text('Threat Map'),
+      ),
       body: Stack(
         children: [
-          // The Google Map
           _buildGoogleMap(),
-
-          // Real-time updates of Stage 2/3 threats
           Positioned.fill(
             child: troubleUid == null
-                ? _buildAllThreatsStream() // Show all active threats
+                ? _buildAllThreatsStream()
                 : _buildSingleThreatStream(troubleUid!),
           ),
         ],
@@ -97,13 +93,14 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildGoogleMap() {
-    final initialCamPos = CameraPosition(
+    final cameraPos = CameraPosition(
       target: _myCurrentLatLng ?? const LatLng(20, 77),
       zoom: 14,
     );
+
     return GoogleMap(
       onMapCreated: (controller) => _mapController = controller,
-      initialCameraPosition: initialCamPos,
+      initialCameraPosition: cameraPos,
       myLocationEnabled: true,
       myLocationButtonEnabled: false,
       zoomControlsEnabled: false,
@@ -114,7 +111,6 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // If no specific troubleUid, show all
   Widget _buildAllThreatsStream() {
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
@@ -128,12 +124,11 @@ class _MapScreenState extends State<MapScreen> {
         }
         final docs = snapshot.data!.docs;
         _updateMapSets(docs);
-        return const SizedBox(); // we just update circles/markers in setState
+        return const SizedBox();
       },
     );
   }
 
-  // If we have troubleUid => stream only that doc
   Widget _buildSingleThreatStream(String uid) {
     return StreamBuilder<DocumentSnapshot>(
       stream:
@@ -144,9 +139,9 @@ class _MapScreenState extends State<MapScreen> {
           return const SizedBox();
         }
         final doc = snapshot.data!;
-        if (!doc.exists) return const SizedBox();
-        final data = doc.data() as Map<String, dynamic>;
-        // We'll treat it as a "single doc" in a list
+        if (!doc.exists) {
+          return const SizedBox();
+        }
         _updateMapSets([doc]);
         return const SizedBox();
       },
@@ -191,20 +186,14 @@ class _MapScreenState extends State<MapScreen> {
           ),
         );
       }
-      // If you want to auto-center on that location, do:
-      // _mapController?.animateCamera(
-      //   CameraUpdate.newLatLngZoom(LatLng(lat, lng), 16),
-      // );
     }
 
-    // update sets
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        setState(() {
-          _stage2Circles = newCircles;
-          _stage3Markers = newMarkers;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _stage2Circles = newCircles;
+        _stage3Markers = newMarkers;
+      });
     });
   }
 }

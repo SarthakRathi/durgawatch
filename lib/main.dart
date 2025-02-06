@@ -1,6 +1,5 @@
 // lib/main.dart
-import 'package:durgawatchf/edit_profile_screen.dart';
-import 'package:durgawatchf/emergency_contacts_screen.dart';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'permissions_wrapper.dart';
@@ -9,11 +8,13 @@ import 'register_screen.dart';
 import 'home_screen.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
-import 'map_screen.dart';
+import 'emergency_contacts_screen.dart';
+import 'edit_profile_screen.dart';
+import 'map_screen.dart'; // new or existing
+import 'police_view_screen.dart'; // new
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialize Firebase
   await Firebase.initializeApp();
   runApp(const MyApp());
 }
@@ -35,18 +36,18 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      // Start at PermissionsWrapper
       initialRoute: '/',
       routes: {
         '/': (context) => const PermissionsWrapper(),
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
         '/home': (context) => const HomeScreen(),
+        '/map': (context) => const MapScreen(),
         '/profile': (context) => const ProfileScreen(),
         '/editProfile': (context) => const EditProfileScreen(),
         '/settings': (context) => const SettingsScreen(),
-        '/contacts': (ctx) => const EmergencyContactsScreen(),
-        '/map': (ctx) => const MapScreen(),
+        '/contacts': (context) => const EmergencyContactsScreen(),
+        '/policeView': (context) => const PoliceViewScreen(), // <--- ADDED
       },
     );
   }
