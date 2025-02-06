@@ -2,23 +2,27 @@
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geolocator/geolocator.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  const MapScreen({Key? key}) : super(key: key);
 
   @override
   State<MapScreen> createState() => _MapScreenState();
 }
 
 class _MapScreenState extends State<MapScreen> {
-  LatLng? _currentLatLng;
-  bool _isLoading = true;
   GoogleMapController? _mapController;
+  bool _isLoadingLocation = true;
+  LatLng? _myCurrentLatLng;
 
-  Set<Circle> _threatCircles = {};
-  Set<Marker> _threatMarkers = {};
+  // For showing threats
+  Set<Circle> _stage2Circles = {};
+  Set<Marker> _stage3Markers = {};
+
+  // If we pass a specific user UID:
+  String? troubleUid;
 
   @override
   void initState() {
@@ -26,11 +30,19 @@ class _MapScreenState extends State<MapScreen> {
     _initLocation();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Read arguments (if any)
+    troubleUid = ModalRoute.of(context)?.settings.arguments as String?;
+  }
+
+  // Get my own device location => center map
   Future<void> _initLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        setState(() => _isLoading = false);
+        setState(() => _isLoadingLocation = false);
         return;
       }
 
@@ -38,117 +50,46 @@ class _MapScreenState extends State<MapScreen> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          setState(() => _isLoading = false);
+          setState(() => _isLoadingLocation = false);
           return;
         }
       }
       if (permission == LocationPermission.deniedForever) {
-        setState(() => _isLoading = false);
+        setState(() => _isLoadingLocation = false);
         return;
       }
 
-      Position position = await Geolocator.getCurrentPosition();
+      final pos = await Geolocator.getCurrentPosition();
       setState(() {
-        _currentLatLng = LatLng(position.latitude, position.longitude);
-        _isLoading = false;
+        _myCurrentLatLng = LatLng(pos.latitude, pos.longitude);
+        _isLoadingLocation = false;
       });
-    } catch (_) {
-      setState(() => _isLoading = false);
+    } catch (e) {
+      setState(() => _isLoadingLocation = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
+    if (_isLoadingLocation) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Realtime Map')),
-        body: const Center(child: CircularProgressIndicator()),
+        appBar: AppBar(title: Text('Map')),
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    // If user location is null, we can still show the map but not centered on user.
     return Scaffold(
-      appBar: AppBar(title: const Text('Realtime Map')),
+      appBar: AppBar(title: const Text('Threat Map')),
       body: Stack(
         children: [
-          // 1) Underlying Google Map
+          // The Google Map
           _buildGoogleMap(),
 
-          // 2) Overlaid StreamBuilder to get threats from Firestore
-          //    and update circles + markers
+          // Real-time updates of Stage 2/3 threats
           Positioned.fill(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('threats')
-                  .where('isActive', isEqualTo: true)
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  // Return empty container to avoid re-initializing map
-                  return const SizedBox();
-                }
-
-                // Build sets for circles (Stage 2) + markers (Stage 3)
-                final newCircles = <Circle>{};
-                final newMarkers = <Marker>{};
-
-                if (snapshot.hasData) {
-                  for (var doc in snapshot.data!.docs) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    final lat = data['lat'] as double?;
-                    final lng = data['lng'] as double?;
-                    final stage = data['stageNumber'] as int? ?? 2;
-
-                    if (lat == null || lng == null) continue;
-
-                    // If Stage 2 => show circle
-                    // If Stage 3 => show marker
-                    if (stage == 2) {
-                      // a circle representing approximate zone
-                      final circleId = CircleId(doc.id);
-                      final circle = Circle(
-                        circleId: circleId,
-                        center: LatLng(lat, lng),
-                        radius: 80.0, // ~80m radius, adjust as you like
-                        fillColor: Colors.red.withOpacity(0.3),
-                        strokeColor: Colors.red,
-                        strokeWidth: 1,
-                      );
-                      newCircles.add(circle);
-                    } else if (stage == 3) {
-                      // a precise marker
-                      final markerId = MarkerId(doc.id);
-                      final marker = Marker(
-                        markerId: markerId,
-                        position: LatLng(lat, lng),
-                        infoWindow: InfoWindow(
-                          title: 'Stage 3 Threat',
-                          snippet: 'Accurate location',
-                        ),
-                        icon: BitmapDescriptor.defaultMarkerWithHue(
-                          BitmapDescriptor.hueRed,
-                        ),
-                      );
-                      newMarkers.add(marker);
-                    } else {
-                      // If stage 1 or unknown => ignore or do something else
-                    }
-                  }
-                }
-
-                // Update sets in setState
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) {
-                    setState(() {
-                      _threatCircles = newCircles;
-                      _threatMarkers = newMarkers;
-                    });
-                  }
-                });
-
-                return const SizedBox();
-              },
-            ),
+            child: troubleUid == null
+                ? _buildAllThreatsStream() // Show all active threats
+                : _buildSingleThreatStream(troubleUid!),
           ),
         ],
       ),
@@ -156,24 +97,114 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildGoogleMap() {
-    final initialCam = CameraPosition(
-      target: _currentLatLng ?? const LatLng(20, 77), // fallback if no location
+    final initialCamPos = CameraPosition(
+      target: _myCurrentLatLng ?? const LatLng(20, 77),
       zoom: 14,
     );
-
     return GoogleMap(
       onMapCreated: (controller) => _mapController = controller,
-      initialCameraPosition: initialCam,
-      myLocationEnabled: _currentLatLng != null,
+      initialCameraPosition: initialCamPos,
+      myLocationEnabled: true,
       myLocationButtonEnabled: false,
       zoomControlsEnabled: false,
       mapToolbarEnabled: false,
       compassEnabled: true,
-      mapType: MapType.normal,
-
-      // stage2 => circles, stage3 => markers
-      circles: _threatCircles,
-      markers: _threatMarkers,
+      circles: _stage2Circles,
+      markers: _stage3Markers,
     );
+  }
+
+  // If no specific troubleUid, show all
+  Widget _buildAllThreatsStream() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('threats')
+          .where('isActive', isEqualTo: true)
+          .where('stageNumber', whereIn: [2, 3]).snapshots(),
+      builder: (ctx, snapshot) {
+        if (!snapshot.hasData ||
+            snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox();
+        }
+        final docs = snapshot.data!.docs;
+        _updateMapSets(docs);
+        return const SizedBox(); // we just update circles/markers in setState
+      },
+    );
+  }
+
+  // If we have troubleUid => stream only that doc
+  Widget _buildSingleThreatStream(String uid) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream:
+          FirebaseFirestore.instance.collection('threats').doc(uid).snapshots(),
+      builder: (ctx, snapshot) {
+        if (!snapshot.hasData ||
+            snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox();
+        }
+        final doc = snapshot.data!;
+        if (!doc.exists) return const SizedBox();
+        final data = doc.data() as Map<String, dynamic>;
+        // We'll treat it as a "single doc" in a list
+        _updateMapSets([doc]);
+        return const SizedBox();
+      },
+    );
+  }
+
+  void _updateMapSets(List<DocumentSnapshot> docs) {
+    final newCircles = <Circle>{};
+    final newMarkers = <Marker>{};
+
+    for (var doc in docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final lat = data['lat'] as double?;
+      final lng = data['lng'] as double?;
+      final stage = data['stageNumber'] as int? ?? 0;
+
+      if (lat == null || lng == null) continue;
+
+      if (stage == 2) {
+        newCircles.add(
+          Circle(
+            circleId: CircleId(doc.id),
+            center: LatLng(lat, lng),
+            radius: 80,
+            fillColor: Colors.red.withOpacity(0.3),
+            strokeColor: Colors.red,
+            strokeWidth: 1,
+          ),
+        );
+      } else if (stage == 3) {
+        newMarkers.add(
+          Marker(
+            markerId: MarkerId(doc.id),
+            position: LatLng(lat, lng),
+            infoWindow: const InfoWindow(
+              title: 'Stage 3 Threat',
+              snippet: 'Precise location',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueRed,
+            ),
+          ),
+        );
+      }
+      // If you want to auto-center on that location, do:
+      // _mapController?.animateCamera(
+      //   CameraUpdate.newLatLngZoom(LatLng(lat, lng), 16),
+      // );
+    }
+
+    // update sets
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        setState(() {
+          _stage2Circles = newCircles;
+          _stage3Markers = newMarkers;
+        });
+      }
+    });
   }
 }

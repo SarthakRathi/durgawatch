@@ -18,7 +18,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   // -------------------------------------------------------------
-  // 1) SPEECH & STAGE FIELDS (your original)
+  // 1) SPEECH & STAGE FIELDS
   // -------------------------------------------------------------
   bool _alertModeOn = false;
   bool _isListening = false;
@@ -35,9 +35,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _locationUpdateTimer;
   final _locService = LocationService();
 
-  // -------------------------------------------------------------
-  // initState, dispose, etc.
-  // -------------------------------------------------------------
   @override
   void initState() {
     super.initState();
@@ -57,7 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------
-  // 2) ALERT BANNER if *I* am in someone's alertContacts
+  // 2) ALERT BANNER: IF I AM A CONTACT FOR SOMEONE ELSE
   // -------------------------------------------------------------
   Widget _buildContactAlertBanner() {
     final currentUser = FirebaseAuth.instance.currentUser;
@@ -78,41 +75,62 @@ class _HomeScreenState extends State<HomeScreen> {
           return Text('Stream error: ${snapshot.error}');
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          // No doc => I'm not in alertContacts for any stage 2/3
+          // I'm not a contact for any stage2/3 threat
           return const SizedBox();
         }
 
-        // If multiple threats, show them all
         final troubleDocs = snapshot.data!.docs;
 
         return Container(
           margin: const EdgeInsets.only(bottom: 16),
-          child: Card(
-            color: Colors.redAccent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Colors.redAccent, Colors.red],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: troubleDocs.map((docSnap) {
-                  final data = docSnap.data() as Map<String, dynamic>;
-                  final userName = data['userName'] ?? 'Someone';
-                  final stage = data['stageNumber'] ?? '?';
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8.0),
-                    child: Text(
-                      '$userName is in STAGE $stage!',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 8,
+                offset: Offset(0, 4),
+              )
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: troubleDocs.map((docSnap) {
+                final data = docSnap.data() as Map<String, dynamic>;
+                final userName = data['userName'] ?? 'Someone';
+                final stage = data['stageNumber'] ?? '?';
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning, color: Colors.white, size: 36),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '$userName is in STAGE $stage!',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
+                    ],
+                  ),
+                );
+              }).toList(),
             ),
           ),
         );
@@ -123,7 +141,6 @@ class _HomeScreenState extends State<HomeScreen> {
   // -------------------------------------------------------------
   // 3) LOCATION & STAGE METHODS
   // -------------------------------------------------------------
-  /// Check if location is enabled; if not, show a dialog prompt.
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -143,7 +160,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Fetch stage1Time, stage2Time once from Firestore /users/{uid}/settings/stages
   Future<void> _fetchStageTimes() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -170,7 +186,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Initialize speech recognition
   Future<void> _initSpeech() async {
     bool available = await _speech.initialize(
       onStatus: (status) => debugPrint('Speech status: $status'),
@@ -179,7 +194,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _speechAvailable = available);
   }
 
-  /// Start listening for “help”
   Future<void> _startListeningForHelp() async {
     if (!_speechAvailable) return;
     setState(() => _isListening = true);
@@ -189,14 +203,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Stop speech
   Future<void> _stopListeningForHelp() async {
     if (!_isListening) return;
     await _speech.stop();
     setState(() => _isListening = false);
   }
 
-  /// If recognized “help”, activate Stage 1
   void _onSpeechResult(dynamic result) {
     try {
       final recognized = result.recognizedWords?.toLowerCase() ?? '';
@@ -208,9 +220,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // -------------------------------------------------------------
-  // 4) _activateStage => sets Firestore doc
-  // -------------------------------------------------------------
   Future<void> _activateStage(int stageNumber) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -218,7 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // 1) Gather alertContacts from /users/{myUid}/contacts
+    // gather contacts
     final contactsSnap = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -232,7 +241,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 2) Get my userName from /users/{myUid}
+    // get userName
     final userDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -240,7 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final userData = userDoc.data() ?? {};
     final userName = userData['fullName'] ?? 'Unknown';
 
-    // 3) Write to /threats/{myUid}
+    // update /threats
     await FirebaseFirestore.instance.collection('threats').doc(user.uid).set({
       'userId': user.uid,
       'userName': userName,
@@ -250,10 +259,8 @@ class _HomeScreenState extends State<HomeScreen> {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    // 4) Update local stage
     setState(() => _activeStageNumber = stageNumber);
 
-    // 5) Start timers or location if needed
     if (stageNumber == 1) {
       _startStage1Timer();
     } else if (stageNumber == 2) {
@@ -266,7 +273,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Deactivate => stageNumber=0, isActive=false
   Future<void> _deactivateStages() async {
     _locationUpdateTimer?.cancel();
     _stageTimer?.cancel();
@@ -285,9 +291,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // -------------------------------------------------------------
-  // 5) STAGE TIMERS => call _activateStage(nextStage)
-  // -------------------------------------------------------------
   void _startStage1Timer() {
     _timeLeftSec = _stage1Time;
     _stageTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -323,7 +326,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Start location updates for Stage 2 or 3
   void _startLocationUpdates(int stageNumber) {
     if (stageNumber < 2) return;
     _locationUpdateTimer?.cancel();
@@ -337,7 +339,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Merges lat/lng into /threats/{myUid}
   Future<void> _updateThreatLocation(
       int stageNumber, double lat, double lng) async {
     if (_activeStageNumber == null || _activeStageNumber! < 2) {
@@ -356,7 +357,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }, SetOptions(merge: true));
   }
 
-  // If forcibly stopping location updates
   Future<void> _stopLocationUpdates() async {
     _locationUpdateTimer?.cancel();
     final user = FirebaseAuth.instance.currentUser;
@@ -368,9 +368,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // -------------------------------------------------------------
-  // 6) UTILITY: Format mm:ss
-  // -------------------------------------------------------------
   String _formatTime(int seconds) {
     if (seconds <= 0) return '00:00';
     final m = seconds ~/ 60;
@@ -379,7 +376,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------
-  // 7) BUILD
+  // 4) BUILD
   // -------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
@@ -415,19 +412,11 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
-                  // If I'm a contact for someone in stage 2/3, show this banner
                   _buildContactAlertBanner(),
-                  const SizedBox(height: 8),
-
-                  // If I am in a stage, show the active stage card
                   if (_activeStageNumber != null) _buildActiveStageCard(),
                   const SizedBox(height: 16),
-
-                  // Alert Mode (speech)
                   _buildAlertModeSection(),
                   const SizedBox(height: 24),
-
-                  // Your existing grid: Realtime Map, Profile, etc.
                   GridView.count(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -475,6 +464,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         description: 'Maximum security',
                         color: Colors.red,
                       ),
+
+                      // **NEW** policeman card at last
+                      _buildGridItem(
+                        title: 'Police View',
+                        assetPath: 'assets/images/policeman.png',
+                        description: 'View police interface',
+                        onTap: () {
+                          // TODO: Add logic or route for policeman view
+                          // e.g., Navigator.pushNamed(context, '/policeView');
+                        },
+                      ),
                     ],
                   ),
                 ],
@@ -487,7 +487,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------
-  // 8) ACTIVE STAGE CARD
+  // 5) ACTIVE STAGE CARD
   // -------------------------------------------------------------
   Widget _buildActiveStageCard() {
     final currentStage = _activeStageNumber!;
@@ -578,7 +578,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------
-  // 9) ALERT MODE (SPEECH)
+  // 6) ALERT MODE (SPEECH)
   // -------------------------------------------------------------
   Widget _buildAlertModeSection() {
     return Container(
@@ -653,7 +653,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------
-  // 10) GRID ITEMS
+  // 7) GRID ITEMS
   // -------------------------------------------------------------
   Widget _buildGridItem({
     required String title,

@@ -9,6 +9,7 @@ import 'register_screen.dart';
 import 'home_screen.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
+import 'map_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,6 +46,7 @@ class MyApp extends StatelessWidget {
         '/editProfile': (context) => const EditProfileScreen(),
         '/settings': (context) => const SettingsScreen(),
         '/contacts': (ctx) => const EmergencyContactsScreen(),
+        '/map': (ctx) => const MapScreen(),
       },
     );
   }
