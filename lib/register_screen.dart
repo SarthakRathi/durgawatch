@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-// import 'package:cloud_firestore/cloud_firestore.dart'; // If using Firestore
+import 'package:cloud_firestore/cloud_firestore.dart'; // <-- Import Firestore
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -34,23 +34,16 @@ class _RegisterScreenState extends State<RegisterScreen>
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
-
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animationController,
-        curve: Curves.easeIn,
-      ),
+      CurvedAnimation(parent: _animationController, curve: Curves.easeIn),
     );
-
     _slideAnimation = Tween<Offset>(
       begin: const Offset(0, 0.3),
       end: Offset.zero,
-    ).animate(
-      CurvedAnimation(
-        parent: _animationController,
-        curve: Curves.easeOut,
-      ),
-    );
+    ).animate(CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOut,
+    ));
 
     _animationController.forward();
   }
@@ -75,17 +68,17 @@ class _RegisterScreenState extends State<RegisterScreen>
     });
 
     try {
+      // 1) Create user in Firebase Auth
       final userCredential =
           await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: _emailCtrl.text.trim(),
         password: _passCtrl.text.trim(),
       );
 
-      // Update display name in Firebase Auth
+      // 2) Update displayName in Auth
       await userCredential.user?.updateDisplayName(_nameCtrl.text.trim());
 
-      // If you want to store phone/address in Firestore, for example:
-      /*
+      // 3) Store user details in Firestore (users collection)
       await FirebaseFirestore.instance
           .collection('users')
           .doc(userCredential.user!.uid)
@@ -96,7 +89,6 @@ class _RegisterScreenState extends State<RegisterScreen>
         'address': _addressCtrl.text.trim(),
         'createdAt': FieldValue.serverTimestamp(),
       });
-      */
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -124,9 +116,10 @@ class _RegisterScreenState extends State<RegisterScreen>
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+
     return Scaffold(
       body: Container(
-        // Background gradient
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
@@ -140,7 +133,6 @@ class _RegisterScreenState extends State<RegisterScreen>
         ),
         child: SafeArea(
           child: SingleChildScrollView(
-            // The SingleChildScrollView removes overflow and allows scrolling.
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: FadeTransition(
@@ -151,14 +143,12 @@ class _RegisterScreenState extends State<RegisterScreen>
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       const SizedBox(height: 40),
-                      // App Logo or Icon
                       Icon(
                         Icons.person_add_outlined,
                         size: 80,
                         color: Theme.of(context).primaryColor,
                       ),
                       const SizedBox(height: 24),
-                      // Title with subtle shadow
                       Text(
                         'Create Account',
                         style: TextStyle(
@@ -183,7 +173,6 @@ class _RegisterScreenState extends State<RegisterScreen>
                         ),
                       ),
                       const SizedBox(height: 32),
-                      // Registration Form
                       Card(
                         elevation: 8,
                         shadowColor: Colors.black26,
@@ -251,7 +240,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   },
                                 ),
                                 const SizedBox(height: 16),
-                                // Mobile Number
+                                // Phone
                                 TextFormField(
                                   controller: _phoneCtrl,
                                   keyboardType: TextInputType.phone,
@@ -272,7 +261,6 @@ class _RegisterScreenState extends State<RegisterScreen>
                                     if (value == null || value.isEmpty) {
                                       return 'Please enter your mobile number';
                                     }
-                                    // Additional phone validation can go here
                                     return null;
                                   },
                                 ),
@@ -341,7 +329,6 @@ class _RegisterScreenState extends State<RegisterScreen>
                                     return null;
                                   },
                                 ),
-                                // Error message if any
                                 if (_errorText != null) ...[
                                   const SizedBox(height: 16),
                                   Container(
@@ -373,7 +360,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   ),
                                 ],
                                 const SizedBox(height: 24),
-                                // Sign Up button
+                                // Sign Up Button
                                 SizedBox(
                                   height: 56,
                                   child: ElevatedButton(
@@ -408,7 +395,6 @@ class _RegisterScreenState extends State<RegisterScreen>
                         ),
                       ),
                       const SizedBox(height: 24),
-                      // Go to login
                       TextButton(
                         onPressed: _goToLogin,
                         child: RichText(
