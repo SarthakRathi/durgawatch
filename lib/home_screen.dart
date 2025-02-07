@@ -8,6 +8,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'location_service.dart';
+// >>> IMPORTANT: Import the updated motion detection with net magnitude
+import 'motion_detection.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,6 +19,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // Speech recognition + stage logic fields
   bool _alertModeOn = false;
   bool _isListening = false;
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -32,24 +35,50 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _locationUpdateTimer;
   final _locService = LocationService();
 
+  // >>> Our net-magnitude-based MotionDetectionService
+  late final MotionDetectionService _motionService;
+
   @override
   void initState() {
     super.initState();
+
+    // Initialize speech, location checks, fetch stage times
     _initSpeech();
     _checkLocationService();
     _fetchStageTimes();
+
+    // >>> Start the motion detection
+    _motionService =
+        MotionDetectionService(onMotionDetected: _handleMotionDetected);
+    _motionService.start();
   }
 
   @override
   void dispose() {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
+
+    // Stop motion detection
+    _motionService.stop();
+
     if (_isListening) {
       _speech.stop();
     }
     super.dispose();
   }
 
+  /// >>> Called when net magnitude is above threshold for multiple consecutive samples.
+  void _handleMotionDetected() {
+    // Only start Stage 1 if not already in stage >=1
+    if (_activeStageNumber == null || _activeStageNumber! < 1) {
+      debugPrint('Detected real motion => Stage 1');
+      _activateStage(1);
+    }
+  }
+
+  // ----------------------------------------------------------------------
+  // 1) CONTACT ALERT BANNER
+  // ----------------------------------------------------------------------
   Widget _buildContactAlertBanner() {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return const SizedBox();
@@ -87,7 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
               BoxShadow(
                 color: Colors.black26,
                 blurRadius: 8,
-                offset: Offset(0, 4),
+                offset: const Offset(0, 4),
               )
             ],
           ),
@@ -131,6 +160,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ----------------------------------------------------------------------
+  // 2) CHECK LOCATION SERVICE
+  // ----------------------------------------------------------------------
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -150,6 +182,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ----------------------------------------------------------------------
+  // 3) FETCH STAGE TIMES FROM FIRESTORE
+  // ----------------------------------------------------------------------
   Future<void> _fetchStageTimes() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -176,6 +211,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ----------------------------------------------------------------------
+  // 4) SPEECH RECOGNITION
+  // ----------------------------------------------------------------------
   Future<void> _initSpeech() async {
     bool available = await _speech.initialize(
       onStatus: (status) => debugPrint('Speech status: $status'),
@@ -210,6 +248,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ----------------------------------------------------------------------
+  // 5) STAGE ACTIVATION / DEACTIVATION
+  // ----------------------------------------------------------------------
   Future<void> _activateStage(int stageNumber) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -217,6 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    // gather contact UIDs
     final contactsSnap = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -278,6 +320,9 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ----------------------------------------------------------------------
+  // 6) TIMERS FOR STAGE 1 & 2
+  // ----------------------------------------------------------------------
   void _startStage1Timer() {
     _timeLeftSec = _stage1Time;
     _stageTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -313,6 +358,9 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ----------------------------------------------------------------------
+  // 7) LOCATION UPDATES FOR STAGE 2 & 3
+  // ----------------------------------------------------------------------
   void _startLocationUpdates(int stageNumber) {
     if (stageNumber < 2) return;
     _locationUpdateTimer?.cancel();
@@ -362,6 +410,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  // ----------------------------------------------------------------------
+  // 8) BUILD WIDGET
+  // ----------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -396,11 +447,20 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
+                  // 1) Contact Alert Banner
                   _buildContactAlertBanner(),
+
+                  // 2) If I'm in Stage 1, 2, or 3 => show card
                   if (_activeStageNumber != null) _buildActiveStageCard(),
+
                   const SizedBox(height: 16),
+
+                  // 3) Alert Mode for speech recognition
                   _buildAlertModeSection(),
+
                   const SizedBox(height: 24),
+
+                  // 4) Grid items for Realtime Map, Profile, etc.
                   GridView.count(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -448,7 +508,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         description: 'Maximum security',
                         color: Colors.red,
                       ),
-                      // New policeman card
                       _buildGridItem(
                         title: 'Police View',
                         assetPath: 'assets/images/policeman.png',
@@ -468,6 +527,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ACTIVE STAGE CARD
   Widget _buildActiveStageCard() {
     final currentStage = _activeStageNumber!;
     return Container(
@@ -556,6 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ALERT MODE SECTION
   Widget _buildAlertModeSection() {
     return Container(
       decoration: BoxDecoration(
@@ -628,6 +689,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // GRID CARDS
   Widget _buildGridItem({
     required String title,
     required String assetPath,
