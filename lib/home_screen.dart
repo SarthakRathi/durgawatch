@@ -3,13 +3,19 @@
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'dart:async';
+import 'dart:io';
+
+import 'package:camera/camera.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:video_compress/video_compress.dart'; // for compression
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 
+import 'package:geolocator/geolocator.dart';
 import 'location_service.dart';
-// >>> IMPORTANT: Import the updated motion detection with net magnitude
 import 'motion_detection.dart';
+import 'recordings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,7 +25,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Speech recognition + stage logic fields
+  // Speech + Stage
   bool _alertModeOn = false;
   bool _isListening = false;
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -35,19 +41,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _locationUpdateTimer;
   final _locService = LocationService();
 
-  // >>> Our net-magnitude-based MotionDetectionService
+  // Motion detection
   late final MotionDetectionService _motionService;
+
+  // Camera
+  CameraController? _cameraController;
+  bool _isRecording = false;
 
   @override
   void initState() {
     super.initState();
-
-    // Initialize speech, location checks, fetch stage times
     _initSpeech();
     _checkLocationService();
     _fetchStageTimes();
 
-    // >>> Start the motion detection
     _motionService =
         MotionDetectionService(onMotionDetected: _handleMotionDetected);
     _motionService.start();
@@ -57,9 +64,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
-
-    // Stop motion detection
     _motionService.stop();
+
+    _stopRecordingCamera();
+    _cameraController?.dispose();
 
     if (_isListening) {
       _speech.stop();
@@ -67,18 +75,13 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// >>> Called when net magnitude is above threshold for multiple consecutive samples.
   void _handleMotionDetected() {
-    // Only start Stage 1 if not already in stage >=1
     if (_activeStageNumber == null || _activeStageNumber! < 1) {
-      debugPrint('Detected real motion => Stage 1');
       _activateStage(1);
     }
   }
 
-  // ----------------------------------------------------------------------
-  // 1) CONTACT ALERT BANNER
-  // ----------------------------------------------------------------------
+  // Banners for Stage2/3 alert
   Widget _buildContactAlertBanner() {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return const SizedBox();
@@ -160,9 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ----------------------------------------------------------------------
-  // 2) CHECK LOCATION SERVICE
-  // ----------------------------------------------------------------------
+  // Check location
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -182,9 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // 3) FETCH STAGE TIMES FROM FIRESTORE
-  // ----------------------------------------------------------------------
+  // Stage times
   Future<void> _fetchStageTimes() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -211,9 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // 4) SPEECH RECOGNITION
-  // ----------------------------------------------------------------------
+  // Speech
   Future<void> _initSpeech() async {
     bool available = await _speech.initialize(
       onStatus: (status) => debugPrint('Speech status: $status'),
@@ -248,9 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // 5) STAGE ACTIVATION / DEACTIVATION
-  // ----------------------------------------------------------------------
+  // Stage logic
   Future<void> _activateStage(int stageNumber) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -258,7 +253,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // gather contact UIDs
+    // gather contacts
     final contactsSnap = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -292,11 +287,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (stageNumber == 1) {
       _startStage1Timer();
+      // no recording
+      _stopRecordingCamera();
     } else if (stageNumber == 2) {
       _startStage2Timer();
       _startLocationUpdates(2);
+      _startRecordingCamera();
     } else if (stageNumber == 3) {
       _startLocationUpdates(3);
+      _startRecordingCamera();
     } else {
       _timeLeftSec = 0;
     }
@@ -318,11 +317,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _activeStageNumber = null;
       _timeLeftSec = 0;
     });
+
+    _stopRecordingCamera();
   }
 
-  // ----------------------------------------------------------------------
-  // 6) TIMERS FOR STAGE 1 & 2
-  // ----------------------------------------------------------------------
   void _startStage1Timer() {
     _timeLeftSec = _stage1Time;
     _stageTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -358,9 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ----------------------------------------------------------------------
-  // 7) LOCATION UPDATES FOR STAGE 2 & 3
-  // ----------------------------------------------------------------------
+  // Location
   void _startLocationUpdates(int stageNumber) {
     if (stageNumber < 2) return;
     _locationUpdateTimer?.cancel();
@@ -392,17 +388,117 @@ class _HomeScreenState extends State<HomeScreen> {
     }, SetOptions(merge: true));
   }
 
-  Future<void> _stopLocationUpdates() async {
-    _locationUpdateTimer?.cancel();
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      await FirebaseFirestore.instance
-          .collection('threats')
-          .doc(user.uid)
-          .set({'isActive': false}, SetOptions(merge: true));
+  // Camera logic
+  Future<void> _initCameraIfNeeded() async {
+    if (_cameraController != null) return;
+    final cameras = await availableCameras();
+    final backCam = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first);
+
+    _cameraController = CameraController(
+      backCam,
+      ResolutionPreset.medium,
+      enableAudio: true,
+    );
+    await _cameraController!.initialize();
+  }
+
+  Future<void> _startRecordingCamera() async {
+    if (_isRecording) return;
+    try {
+      await _initCameraIfNeeded();
+      await _cameraController!.startVideoRecording();
+      setState(() => _isRecording = true);
+    } catch (e) {
+      debugPrint('Error start camera: $e');
     }
   }
 
+  Future<void> _stopRecordingCamera() async {
+    if (!_isRecording || _cameraController == null) return;
+    try {
+      final XFile file = await _cameraController!.stopVideoRecording();
+      setState(() => _isRecording = false);
+
+      // Move .mp4 to local doc dir
+      final dir = await getApplicationDocumentsDirectory();
+      final recDir = Directory('${dir.path}/recordings');
+      if (!recDir.existsSync()) {
+        recDir.createSync(recursive: true);
+      }
+      final fileName = 'REC_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final newPath = '${recDir.path}/$fileName';
+      final localFile = await File(file.path).rename(newPath);
+
+      debugPrint('Saved local recording to $newPath');
+
+      // >>> 1) Compress
+      final compressed = await _compressVideo(localFile);
+      if (compressed != null) {
+        debugPrint('Compressed path: ${compressed.path}');
+        // 2) Upload compressed
+        await _uploadVideoToFirebase(compressed, fileName);
+      } else {
+        // fallback: upload the original if compression failed
+        await _uploadVideoToFirebase(localFile, fileName);
+      }
+    } catch (e) {
+      debugPrint('Error stop camera: $e');
+    }
+  }
+
+  /// Use video_compress to reduce file size
+  Future<File?> _compressVideo(File inputFile) async {
+    try {
+      debugPrint('Starting compression...');
+      final compressedMedia = await VideoCompress.compressVideo(
+        inputFile.path,
+        quality: VideoQuality.MediumQuality, // pick your desired level
+        deleteOrigin: false, // keep original file
+      );
+      if (compressedMedia == null) {
+        debugPrint('Compression returned null');
+        return null;
+      }
+      return File(compressedMedia.path!);
+    } catch (e) {
+      debugPrint('Compression error: $e');
+      return null;
+    }
+  }
+
+  Future<void> _uploadVideoToFirebase(File localFile, String fileName) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final storageRef = FirebaseStorage.instance.ref();
+      final recordingsRef =
+          storageRef.child('recordings/${user.uid}/$fileName');
+
+      final uploadTask = recordingsRef.putFile(localFile);
+      final snapshot = await uploadTask.whenComplete(() {});
+      if (snapshot.state == TaskState.success) {
+        final downloadUrl = await recordingsRef.getDownloadURL();
+        debugPrint('Video uploaded. URL: $downloadUrl');
+
+        // Optionally store metadata in Firestore
+        await FirebaseFirestore.instance.collection('videoRecordings').add({
+          'userId': user.uid,
+          'fileName': fileName,
+          'downloadUrl': downloadUrl,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+      } else {
+        debugPrint('Upload error: ${snapshot.state}');
+      }
+    } catch (e) {
+      debugPrint('Error uploading video: $e');
+    }
+  }
+
+  // UI
   String _formatTime(int seconds) {
     if (seconds <= 0) return '00:00';
     final m = seconds ~/ 60;
@@ -410,9 +506,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
-  // ----------------------------------------------------------------------
-  // 8) BUILD WIDGET
-  // ----------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -447,20 +540,13 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
-                  // 1) Contact Alert Banner
                   _buildContactAlertBanner(),
-
-                  // 2) If I'm in Stage 1, 2, or 3 => show card
                   if (_activeStageNumber != null) _buildActiveStageCard(),
-
                   const SizedBox(height: 16),
-
-                  // 3) Alert Mode for speech recognition
                   _buildAlertModeSection(),
-
                   const SizedBox(height: 24),
 
-                  // 4) Grid items for Realtime Map, Profile, etc.
+                  // 2 columns, including the Recordings card
                   GridView.count(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -469,52 +555,73 @@ class _HomeScreenState extends State<HomeScreen> {
                     crossAxisSpacing: 12,
                     childAspectRatio: 0.65,
                     children: [
-                      _buildGridItem(
-                        title: 'Realtime Map',
-                        assetPath: 'assets/images/maps.png',
-                        description: 'View threats',
-                        onTap: () => Navigator.pushNamed(context, '/map'),
-                      ),
+                      // 1) Profile
                       _buildGridItem(
                         title: 'Profile',
                         assetPath: 'assets/images/profile.png',
                         description: 'Manage your profile',
                         onTap: () => Navigator.pushNamed(context, '/profile'),
                       ),
+                      // 2) Realtime Map
                       _buildGridItem(
-                        title: 'Emergency Contacts',
+                        title: 'Realtime Map',
+                        assetPath: 'assets/images/maps.png',
+                        description: 'View threats',
+                        onTap: () => Navigator.pushNamed(context, '/map'),
+                      ),
+                      // 3) Contacts
+                      _buildGridItem(
+                        title: 'Contacts',
                         assetPath: 'assets/images/contacts.png',
                         description: 'Manage your contacts',
                         onTap: () => Navigator.pushNamed(context, '/contacts'),
                       ),
+                      // 4) Recordings
+                      _buildGridItem(
+                        title: 'Recordings',
+                        assetPath: 'assets/images/camera.png',
+                        description: 'View saved videos',
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const RecordingsScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      // 5) Settings
                       _buildGridItem(
                         title: 'Settings',
                         assetPath: 'assets/images/check.png',
                         description: 'Manage app settings',
                         onTap: () => Navigator.pushNamed(context, '/settings'),
                       ),
+                      // 6) Police
+                      _buildGridItem(
+                        title: 'Police View',
+                        assetPath: 'assets/images/policeman.png',
+                        description: 'Police interface',
+                        onTap: () =>
+                            Navigator.pushNamed(context, '/policeView'),
+                      ),
+                      // 7) Stage 1
                       _buildStageItem(
                         stageNumber: 1,
                         description: 'Initial alert phase',
                         color: Colors.yellow[700]!,
                       ),
+                      // 8) Stage 2
                       _buildStageItem(
                         stageNumber: 2,
                         description: 'Enhanced security',
                         color: Colors.orange,
                       ),
+                      // 9) Stage 3
                       _buildStageItem(
                         stageNumber: 3,
                         description: 'Maximum security',
                         color: Colors.red,
-                      ),
-                      _buildGridItem(
-                        title: 'Police View',
-                        assetPath: 'assets/images/policeman.png',
-                        description: 'View police interface',
-                        onTap: () {
-                          Navigator.pushNamed(context, '/policeView');
-                        },
                       ),
                     ],
                   ),
@@ -527,7 +634,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ACTIVE STAGE CARD
   Widget _buildActiveStageCard() {
     final currentStage = _activeStageNumber!;
     return Container(
@@ -616,7 +722,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ALERT MODE SECTION
   Widget _buildAlertModeSection() {
     return Container(
       decoration: BoxDecoration(
@@ -689,7 +794,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // GRID CARDS
   Widget _buildGridItem({
     required String title,
     required String assetPath,
