@@ -1,5 +1,3 @@
-// lib/home_screen.dart
-
 import 'dart:async';
 import 'dart:io';
 
@@ -17,6 +15,11 @@ import 'package:geolocator/geolocator.dart';
 import 'location_service.dart';
 import 'motion_detection.dart';
 import 'recordings_screen.dart';
+
+// flutter_fft 1.0.2+6
+import 'package:flutter_fft/flutter_fft.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -43,8 +46,8 @@ class _HomeScreenState extends State<HomeScreen> {
   int _stage1Time = 10;
   int _stage2Time = 300;
 
-  // **NEW**: We'll store the custom trigger phrase from Firestore.
-  String _triggerPhrase = "help"; // fallback if not found in Firestore
+  // Custom Trigger Phrase
+  String _triggerPhrase = "help";
 
   // Location updates
   Timer? _locationUpdateTimer;
@@ -57,6 +60,17 @@ class _HomeScreenState extends State<HomeScreen> {
   // Camera
   CameraController? _cameraController;
   bool _isRecording = false;
+
+  // flutter_fft
+  final FlutterFft _flutterFft = FlutterFft();
+  bool _isPitchDetectionActive = false;
+  bool? _isRecordingFft;
+  double? _frequency;
+  String? _note;
+  int? _octave;
+
+  // Timer for the speech session
+  Timer? _speechTimeoutTimer;
 
   @override
   void initState() {
@@ -74,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
+    _speechTimeoutTimer?.cancel();
 
     _motionService.stop();
     _stopRecordingCamera();
@@ -82,6 +97,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isListening) {
       _speech.stop();
     }
+    _stopPitchDetection();
+
     super.dispose();
   }
 
@@ -100,36 +117,231 @@ class _HomeScreenState extends State<HomeScreen> {
       onError: (error) => debugPrint('Speech error: $error'),
     );
     setState(() => _speechAvailable = available);
+    debugPrint("Speech available? $_speechAvailable");
   }
 
-  Future<void> _startListeningForHelp() async {
-    if (!_speechAvailable) return;
+  Future<void> _startShortSpeechSession() async {
+    if (!_speechAvailable) {
+      debugPrint("Speech not available, skipping STT session...");
+      _startPitchDetection();
+      return;
+    }
+
     setState(() => _isListening = true);
-    await _speech.listen(onResult: _onSpeechResult, localeId: 'en_US');
+
+    // Give 15 seconds
+    _speechTimeoutTimer?.cancel();
+    _speechTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (_isListening) {
+        debugPrint("Speech session timed out => stopping STT now...");
+        _stopListeningForHelp();
+        _startPitchDetection();
+      }
+    });
+
+    // Start STT
+    await _speech.listen(
+      onResult: _onSpeechResult,
+      localeId: 'en_US',
+      listenFor: const Duration(seconds: 15),
+      pauseFor: const Duration(seconds: 3),
+      partialResults: false,
+      cancelOnError: true,
+      listenMode: stt.ListenMode.confirmation,
+    );
+    debugPrint("Started STT session for 15 sec...");
   }
 
   Future<void> _stopListeningForHelp() async {
     if (!_isListening) return;
     await _speech.stop();
+    debugPrint("Stopped speech listening...");
     setState(() => _isListening = false);
   }
 
-  /// Compare recognized text with the custom `_triggerPhrase`.
   void _onSpeechResult(dynamic result) {
     try {
-      final recognized = (result.recognizedWords?.toLowerCase() ?? '').trim();
-      final phrase = _triggerPhrase.toLowerCase().trim();
+      // Only process final results (partialResults=false ensures this too)
+      if (!result.finalResult) {
+        debugPrint("Skipping partial result: ${result.recognizedWords}");
+        return;
+      }
 
-      // If recognized contains the phrase => Stage 3
+      final recognized = (result.recognizedWords?.toLowerCase() ?? '').trim();
+      debugPrint("=== Final recognized text: $recognized");
+
+      // End STT
+      if (_isListening) {
+        _speechTimeoutTimer?.cancel();
+        _stopListeningForHelp();
+      }
+
+      // Check local trigger phrase
+      final phrase = _triggerPhrase.toLowerCase().trim();
       if (recognized.contains(phrase)) {
+        debugPrint("Trigger phrase matched => Stage 3!");
         _activateStage(3, mode: 'voice');
       }
+
+      // Send recognized text to Gemini
+      _sendToGeminiAI(recognized, 0.0, 0.0, 0.0);
+
+      // Start pitch detection
+      _startPitchDetection();
     } catch (e) {
       debugPrint('Speech result error: $e');
     }
   }
 
-  // ------------------ Location Services Check ------------------
+  // ------------------ flutter_fft approach ------------------
+  Future<void> _startPitchDetection() async {
+    debugPrint("== Starting pitch detection ==");
+    if (_isPitchDetectionActive) {
+      debugPrint("Pitch detection already active. Skipping start.");
+      return;
+    }
+    _isPitchDetectionActive = true;
+
+    while (!(await _flutterFft.checkPermission())) {
+      await _flutterFft.requestPermission();
+    }
+
+    debugPrint("Starting flutter_fft recorder...");
+    await _flutterFft.startRecorder();
+    debugPrint("Recorder started with flutter_fft.");
+    setState(() {
+      _isRecordingFft = _flutterFft.getIsRecording;
+    });
+
+    _flutterFft.onRecorderStateChanged.listen((data) {
+      if (data is List && data.length >= 6) {
+        setState(() {
+          _frequency = data[1] as double?;
+          _note = data[2] as String?;
+          _octave = data[5] as int?;
+        });
+        debugPrint("fft freq: $_frequency, note: $_note, octave: $_octave");
+      } else {
+        debugPrint("flutter_fft gave incomplete data: $data");
+      }
+    }, onError: (err) {
+      debugPrint("flutter_fft error: $err");
+    }, onDone: () {
+      debugPrint("flutter_fft onDone called");
+    });
+  }
+
+  Future<void> _stopPitchDetection() async {
+    if (_flutterFft.getIsRecording == true) {
+      debugPrint("Stopping flutter_fft recorder...");
+      await _flutterFft.stopRecorder();
+      setState(() {
+        _isRecordingFft = _flutterFft.getIsRecording;
+      });
+    }
+    _isPitchDetectionActive = false;
+  }
+
+  Future<void> _sendToGeminiAI(
+    String transcript,
+    double pitch,
+    double peakAmplitude,
+    double avgAmplitude,
+  ) async {
+    final apiKey = 'AIzaSyBjx46cXpSvp0NhHvpVphVQsnHrwWCzBYk';
+    final model = 'gemini-1.5-flash';
+    final url =
+        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey';
+
+    debugPrint("\n=== Sending to Gemini API (generateContent) ===");
+    debugPrint("Transcript: $transcript");
+    debugPrint("Pitch: $pitch");
+    debugPrint("peakAmplitude: $peakAmplitude, avgAmplitude: $avgAmplitude");
+
+    final promptStr = """
+You are given a user's speech and acoustic data:
+Transcript: "$transcript"
+Pitch (Hz): $pitch
+Peak Amplitude: $peakAmplitude
+Average Amplitude: $avgAmplitude
+
+Determine if user is in distress.
+Even if you feel slight problematic or if user needs help or is being attacked etc then return true.
+Ignore the acoustic data and focus on transcript only
+Return a JSON: { "distress": true/false, "explanation": "..." }
+""";
+
+    final body = {
+      "contents": [
+        {
+          "parts": [
+            {"text": promptStr}
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0.2,
+      },
+    };
+
+    try {
+      final uri = Uri.parse(url);
+      final headers = {
+        "Content-Type": "application/json",
+      };
+
+      final response =
+          await http.post(uri, headers: headers, body: jsonEncode(body));
+      debugPrint("Gemini response status code: ${response.statusCode}");
+      debugPrint("Gemini response raw body: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final candidates = data["candidates"] as List<dynamic>?;
+
+        if (candidates != null && candidates.isNotEmpty) {
+          final firstCandidate = candidates.first;
+          final content = firstCandidate["content"] as Map<String, dynamic>?;
+
+          if (content != null) {
+            final parts = content["parts"] as List<dynamic>?;
+            if (parts != null && parts.isNotEmpty) {
+              final text = parts.first["text"] as String?;
+
+              if (text != null) {
+                debugPrint("Gemini text output: $text");
+
+                // Extract JSON from the markdown code block
+                final jsonStart = text.indexOf('{');
+                final jsonEnd = text.lastIndexOf('}') + 1;
+
+                if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                  final jsonStr = text.substring(jsonStart, jsonEnd);
+                  final result = jsonDecode(jsonStr) as Map<String, dynamic>;
+
+                  final isDistress = result["distress"] as bool? ?? false;
+                  final explanation = result["explanation"] as String? ?? '';
+
+                  debugPrint(
+                      "Parsed result: distress=$isDistress, explanation=$explanation");
+
+                  if (isDistress && _activeStageNumber == null) {
+                    debugPrint(
+                        "Gemini detected distress => Activating Stage 1...");
+                    await _activateStage(1, mode: 'ai');
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error processing Gemini response: $e");
+    }
+  }
+
+  // ------------------ Location & Stage Logic ------------------
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -149,7 +361,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ------------------ Fetch Stage Times & Trigger Phrase ------------------
   Future<void> _fetchStageTimes() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -167,7 +378,6 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             _stage1Time = data['stage1Time'] ?? 10;
             _stage2Time = data['stage2Time'] ?? 300;
-            // Also load trigger phrase
             _triggerPhrase = data['triggerPhrase'] ?? 'help';
           });
         }
@@ -177,7 +387,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ------------------ Stage Logic ------------------
   Future<void> _activateStage(int stageNumber, {String mode = 'manual'}) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -188,7 +397,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final threatRef =
         FirebaseFirestore.instance.collection('threats').doc(user.uid);
 
-    // if stage≥2 => remove leftover recordingUrl
+    // If stage≥2 => remove leftover recording URL
     if (stageNumber >= 2) {
       await threatRef.set({
         'recordingUrl': FieldValue.delete(),
@@ -196,7 +405,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _latestRecordingUrl = null;
     }
 
-    // get user name
     final userDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -289,7 +497,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ------------------ Stage Timers ------------------
   void _startStage1Timer() {
     _timeLeftSec = _stage1Time;
     _stageTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -324,7 +531,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ------------------ Location Updates ------------------
   void _startLocationUpdates(int stageNumber) {
     if (stageNumber < 2) return;
     _locationUpdateTimer?.cancel();
@@ -339,7 +545,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _updateThreatLocation(
-      int stageNumber, double lat, double lng) async {
+    int stageNumber,
+    double lat,
+    double lng,
+  ) async {
     if (_activeStageNumber == null || _activeStageNumber! < 2) return;
 
     final user = FirebaseAuth.instance.currentUser;
@@ -354,7 +563,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }, SetOptions(merge: true));
   }
 
-  // ------------------ Camera & Recording ------------------
   Future<void> _initCameraIfNeeded() async {
     if (_cameraController != null) return;
     final cameras = await availableCameras();
@@ -801,18 +1009,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _toggleAlertMode() async {
     setState(() => _alertModeOn = !_alertModeOn);
+
     if (_alertModeOn) {
-      // start speech => listens for the _triggerPhrase
-      await _startListeningForHelp();
-      // motion => stage1
+      // Start STT
+      await _startShortSpeechSession();
+
+      // Also start motion detection
       if (!_motionActive) {
         _motionService.start();
         _motionActive = true;
       }
     } else {
+      // Turn OFF
       await _stopListeningForHelp();
+      _speechTimeoutTimer?.cancel();
+
+      // Stop motion
       _motionService.stop();
       _motionActive = false;
+
+      // Stop pitch detection
+      if (_isPitchDetectionActive) {
+        await _stopPitchDetection();
+      }
     }
   }
 
