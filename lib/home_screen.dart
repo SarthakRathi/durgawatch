@@ -21,6 +21,9 @@ import 'package:flutter_fft/flutter_fft.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+// 1) Import the SMS service
+import 'stage_sms_service.dart';
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -311,7 +314,6 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
               if (text != null) {
                 debugPrint("Gemini text output: $text");
 
-                // Extract JSON from the markdown code block
                 final jsonStart = text.indexOf('{');
                 final jsonEnd = text.lastIndexOf('}') + 1;
 
@@ -387,6 +389,8 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     }
   }
 
+  /// Activate a particular stage (1,2,3).
+  /// If stage 2 or 3 => sends SMS from the separate StageSmsService.
   Future<void> _activateStage(int stageNumber, {String mode = 'manual'}) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -397,7 +401,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     final threatRef =
         FirebaseFirestore.instance.collection('threats').doc(user.uid);
 
-    // If stage≥2 => remove leftover recording URL
+    // If stage≥2 => remove leftover recording URL from old session
     if (stageNumber >= 2) {
       await threatRef.set({
         'recordingUrl': FieldValue.delete(),
@@ -412,6 +416,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     final userData = userDoc.data() ?? {};
     final userName = userData['fullName'] ?? 'Unknown';
 
+    // Mark Firestore doc
     await threatRef.set({
       'userId': user.uid,
       'userName': userName,
@@ -421,18 +426,45 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
+    // update local state
     setState(() => _activeStageNumber = stageNumber);
 
+    // Handle stage logic
     if (stageNumber == 1) {
       _startStage1Timer();
       _stopRecordingCamera();
     } else if (stageNumber == 2) {
+      // Stage 2 => approximate location + record + SMS
       _startStage2Timer();
       _startLocationUpdates(2);
       _startRecordingCamera();
+
+      final coords = await _locService.getLocation(2);
+      if (coords != null) {
+        final (lat, lng) = coords;
+        // Call our separate SMS service
+        await StageSmsService.sendStageSMS(
+          stageNumber: 2,
+          lat: lat,
+          lng: lng,
+          userUid: user.uid,
+        );
+      }
     } else if (stageNumber == 3) {
+      // Stage 3 => precise location + record + SMS
       _startLocationUpdates(3);
       _startRecordingCamera();
+
+      final coords = await _locService.getLocation(3);
+      if (coords != null) {
+        final (lat, lng) = coords;
+        await StageSmsService.sendStageSMS(
+          stageNumber: 3,
+          lat: lat,
+          lng: lng,
+          userUid: user.uid,
+        );
+      }
     } else {
       _timeLeftSec = 0;
     }
@@ -563,6 +595,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     }, SetOptions(merge: true));
   }
 
+  // ------------------ Camera / Video Recording ------------------
   Future<void> _initCameraIfNeeded() async {
     if (_cameraController != null) return;
     final cameras = await availableCameras();

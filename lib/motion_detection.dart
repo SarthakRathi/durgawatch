@@ -10,7 +10,7 @@ typedef MotionDetectedCallback = void Function();
 class MotionDetectionService {
   // Net magnitude threshold: ~4.0 might be good for normal shaking.
   // If you want stronger movement, set it 5 or 6. If you want very light motion, set 2 or 3.
-  static const double netThreshold = 4.0;
+  static const double netThreshold = 7.0;
 
   // How many consecutive samples > netThreshold we need.
   static const int _samplesNeeded = 3;
