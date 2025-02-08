@@ -15,15 +15,16 @@ class _SettingsScreenState extends State<SettingsScreen>
   late final Animation<double> _fadeAnimation;
   late final Animation<Offset> _slideAnimation;
 
-  // Loading state
   bool _isLoading = true;
   bool _docExists = false;
 
-  // Text controllers for Stage 1 & Stage 2 times
+  // Existing text controllers
   final _stage1TimeCtrl = TextEditingController();
   final _stage2TimeCtrl = TextEditingController();
 
-  // Switch toggles
+  // NEW: text controller for the emergency trigger phrase
+  final _triggerPhraseCtrl = TextEditingController();
+
   bool _stage2SendLocation = true;
   bool _stage2SendVideo = false;
   bool _stage2SendAudio = false;
@@ -33,39 +34,30 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _stage3SendVideo = true;
   bool _stage3SendAudio = true;
 
-  // Firestore doc ref
   late final DocumentReference<Map<String, dynamic>> _docRef;
 
   @override
   void initState() {
     super.initState();
 
-    // Set up animations
+    // Setup animations
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animationController,
-        curve: Curves.easeIn,
-      ),
+      CurvedAnimation(parent: _animationController, curve: Curves.easeIn),
     );
     _slideAnimation = Tween<Offset>(
       begin: const Offset(0, 0.3),
       end: Offset.zero,
     ).animate(
-      CurvedAnimation(
-        parent: _animationController,
-        curve: Curves.easeOut,
-      ),
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
     );
     _animationController.forward();
 
-    // Get user
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      // No user => can't load settings
       return;
     }
 
@@ -76,7 +68,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         .collection('settings')
         .doc('stages');
 
-    // Load initial data from Firestore
     _loadSettings();
   }
 
@@ -86,7 +77,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final snap = await _docRef.get();
       if (!snap.exists) {
-        // Document doesn't exist => user can create defaults
         _docExists = false;
       } else {
         _docExists = true;
@@ -106,6 +96,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         _stage3SendLocation = data['stage3SendLocation'] ?? true;
         _stage3SendVideo = data['stage3SendVideo'] ?? true;
         _stage3SendAudio = data['stage3SendAudio'] ?? true;
+
+        // NEW: load user-defined trigger phrase
+        final triggerPhrase = data['triggerPhrase'] as String? ?? 'help';
+        _triggerPhraseCtrl.text = triggerPhrase;
       }
     } catch (e) {
       debugPrint('Error loading settings: $e');
@@ -119,10 +113,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
-  /// Called when user presses the "Save Settings" button
   Future<void> _saveSettings() async {
     try {
-      // Parse Stage 1 and Stage 2 times
+      // Parse Stage 1 & Stage 2 times
       final stage1Time = int.tryParse(_stage1TimeCtrl.text.trim()) ?? 10;
       final stage2Time = int.tryParse(_stage2TimeCtrl.text.trim()) ?? 300;
 
@@ -136,6 +129,9 @@ class _SettingsScreenState extends State<SettingsScreen>
         'stage3SendLocation': _stage3SendLocation,
         'stage3SendVideo': _stage3SendVideo,
         'stage3SendAudio': _stage3SendAudio,
+
+        // NEW: store the custom trigger phrase
+        'triggerPhrase': _triggerPhraseCtrl.text.trim(),
       }, SetOptions(merge: true));
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -157,12 +153,12 @@ class _SettingsScreenState extends State<SettingsScreen>
     _animationController.dispose();
     _stage1TimeCtrl.dispose();
     _stage2TimeCtrl.dispose();
+    _triggerPhraseCtrl.dispose(); // dispose new text field
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // If user is null => can't do anything
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       return const Scaffold(
@@ -170,15 +166,12 @@ class _SettingsScreenState extends State<SettingsScreen>
       );
     }
 
-    // Show loading indicator until we've loaded or determined doc exists
     if (_isLoading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    // If the doc doesn't exist => show "Create default settings" button
-    // or user can skip. Up to you how you handle it
     if (!_docExists) {
       return Scaffold(
         appBar: AppBar(
@@ -206,20 +199,23 @@ class _SettingsScreenState extends State<SettingsScreen>
                   // Create default settings doc
                   try {
                     await _docRef.set({
-                      "stage1Time": 10,
-                      "stage2Time": 300,
-                      "stage2SendLocation": true,
-                      "stage2SendVideo": false,
-                      "stage2SendAudio": false,
-                      "stage2AccurateLocation": false,
-                      "stage3SendLocation": true,
-                      "stage3SendVideo": true,
-                      "stage3SendAudio": true,
+                      'stage1Time': 10,
+                      'stage2Time': 300,
+                      'stage2SendLocation': true,
+                      'stage2SendVideo': false,
+                      'stage2SendAudio': false,
+                      'stage2AccurateLocation': false,
+                      'stage3SendLocation': true,
+                      'stage3SendVideo': true,
+                      'stage3SendAudio': true,
+
+                      // default phrase
+                      'triggerPhrase': 'help',
                     });
                     setState(() {
                       _docExists = true;
                     });
-                    await _loadSettings(); // reload into local fields
+                    await _loadSettings();
                   } catch (e) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Failed to create doc: $e')),
@@ -234,7 +230,6 @@ class _SettingsScreenState extends State<SettingsScreen>
       );
     }
 
-    // Otherwise, the doc exists + we've loaded everything into local variables
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings', style: TextStyle(color: Colors.black)),
@@ -244,7 +239,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         iconTheme: const IconThemeData(color: Colors.black),
       ),
       body: Container(
-        // Gradient background
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
@@ -427,6 +421,51 @@ class _SettingsScreenState extends State<SettingsScreen>
                               onChanged: (val) {
                                 setState(() => _stage3SendAudio = val);
                               },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ------- TRIGGER PHRASE -------
+                    Card(
+                      elevation: 8,
+                      shadowColor: Colors.black26,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'Emergency Trigger Phrase',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).primaryColor,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'When user says this phrase, Stage 3 will start immediately:',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey[700],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _triggerPhraseCtrl,
+                              decoration: InputDecoration(
+                                hintText: 'e.g. "Help me now"',
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                prefixIcon: const Icon(Icons.record_voice_over),
+                              ),
                             ),
                           ],
                         ),

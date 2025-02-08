@@ -17,22 +17,25 @@ class _MapScreenState extends State<MapScreen> {
   bool _isLoadingLocation = true;
   LatLng? _myCurrentLatLng;
 
-  String? troubleUid;
+  // If lat/lng is passed => single marker
+  LatLng? _focusLatLng;
 
   Set<Circle> _stage2Circles = {};
   Set<Marker> _stage3Markers = {};
 
   @override
-  void initState() {
-    super.initState();
-    _initLocation();
-  }
-
-  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // read arguments
-    troubleUid = ModalRoute.of(context)?.settings.arguments as String?;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map<String, double>) {
+      final lat = args['lat'];
+      final lng = args['lng'];
+      if (lat != null && lng != null) {
+        _focusLatLng = LatLng(lat, lng);
+      }
+    }
+
+    _initLocation();
   }
 
   Future<void> _initLocation() async {
@@ -61,7 +64,7 @@ class _MapScreenState extends State<MapScreen> {
         _myCurrentLatLng = LatLng(position.latitude, position.longitude);
         _isLoadingLocation = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _isLoadingLocation = false);
     }
   }
@@ -82,25 +85,27 @@ class _MapScreenState extends State<MapScreen> {
       body: Stack(
         children: [
           _buildGoogleMap(),
-          Positioned.fill(
-            child: troubleUid == null
-                ? _buildAllThreatsStream()
-                : _buildSingleThreatStream(troubleUid!),
-          ),
+          if (_focusLatLng == null)
+            // show all stage2/3
+            Positioned.fill(
+              child: _buildAllThreatsStream(),
+            )
+          else
+            // single marker mode
+            Positioned.fill(
+              child: _buildSingleMarkerAt(_focusLatLng!),
+            ),
         ],
       ),
     );
   }
 
   Widget _buildGoogleMap() {
-    final cameraPos = CameraPosition(
-      target: _myCurrentLatLng ?? const LatLng(20, 77),
-      zoom: 14,
-    );
+    final center = _focusLatLng ?? _myCurrentLatLng ?? const LatLng(20, 77);
 
     return GoogleMap(
       onMapCreated: (controller) => _mapController = controller,
-      initialCameraPosition: cameraPos,
+      initialCameraPosition: CameraPosition(target: center, zoom: 14),
       myLocationEnabled: true,
       myLocationButtonEnabled: false,
       zoomControlsEnabled: false,
@@ -129,23 +134,27 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Widget _buildSingleThreatStream(String uid) {
-    return StreamBuilder<DocumentSnapshot>(
-      stream:
-          FirebaseFirestore.instance.collection('threats').doc(uid).snapshots(),
-      builder: (ctx, snapshot) {
-        if (!snapshot.hasData ||
-            snapshot.connectionState == ConnectionState.waiting) {
-          return const SizedBox();
-        }
-        final doc = snapshot.data!;
-        if (!doc.exists) {
-          return const SizedBox();
-        }
-        _updateMapSets([doc]);
-        return const SizedBox();
-      },
-    );
+  Widget _buildSingleMarkerAt(LatLng latLng) {
+    // Place a single marker at latLng
+    Future.microtask(() {
+      if (mounted) {
+        setState(() {
+          _stage2Circles.clear();
+          _stage3Markers = {
+            Marker(
+              markerId: const MarkerId('history_marker'),
+              position: latLng,
+              infoWindow: const InfoWindow(title: 'Past Threat'),
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueAzure,
+              ),
+            ),
+          };
+        });
+      }
+    });
+
+    return const SizedBox();
   }
 
   void _updateMapSets(List<DocumentSnapshot> docs) {
