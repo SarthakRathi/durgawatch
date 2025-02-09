@@ -41,25 +41,36 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     super.dispose();
   }
 
-  /// Show a dialog to add or edit an email contact.
-  /// - We'll look up the user by email => get their UID => doc(UID).set(...)
-  void _showEmailDialog({String? docId, String? initialEmail}) {
-    final emailCtrl = TextEditingController(text: initialEmail ?? '');
+  /// Show a dialog to add or edit a contact.
+  /// If `isPhone = false`, we treat [initialValue] as email and do a user lookup.
+  /// If `isPhone = true`, we treat [initialValue] as phone number (no user lookup).
+  void _showAddContactDialog({
+    String? docId,
+    bool isPhone = false,
+    String? initialValue,
+  }) {
+    final ctrl = TextEditingController(text: initialValue ?? '');
 
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
           ),
-          title: Text(docId == null ? 'Add Email' : 'Edit Email'),
+          title: Text(
+            docId == null
+                ? 'Add ${isPhone ? 'Phone' : 'Email'} Contact'
+                : 'Edit ${isPhone ? 'Phone' : 'Email'} Contact',
+          ),
           content: TextField(
-            controller: emailCtrl,
-            keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              hintText: 'name@example.com',
+            controller: ctrl,
+            keyboardType:
+                isPhone ? TextInputType.phone : TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: isPhone ? 'Phone number' : 'Email',
+              hintText:
+                  isPhone ? 'e.g. +1 123 456 7890' : 'e.g. name@example.com',
             ),
           ),
           actions: [
@@ -69,18 +80,20 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
             ),
             ElevatedButton(
               onPressed: () async {
-                final email = emailCtrl.text.trim();
-                if (email.isEmpty || !email.contains('@')) {
+                final textVal = ctrl.text.trim();
+                if (textVal.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Please enter a valid email.'),
+                      content: Text('Please enter a valid value.'),
                       backgroundColor: Colors.red,
                     ),
                   );
                   return;
                 }
-                Navigator.pop(ctx);
 
+                Navigator.pop(ctx); // Close the dialog
+
+                // Now handle the save logic
                 try {
                   final currentUser = FirebaseAuth.instance.currentUser;
                   if (currentUser == null) return;
@@ -90,41 +103,61 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                       .doc(currentUser.uid)
                       .collection('contacts');
 
-                  // 1) LOOK UP user by that email in /users
-                  final userSnap = await FirebaseFirestore.instance
-                      .collection('users')
-                      .where('email', isEqualTo: email)
-                      .get();
-
-                  if (userSnap.docs.isEmpty) {
-                    // no user found => show error
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('No user found with that email!'),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                    return;
-                  }
-
-                  // we have at least 1 doc => first doc's ID is their actual UID
-                  final bUid = userSnap.docs.first.id;
-
-                  if (docId == null) {
-                    // ADD NEW => we use doc(bUid) as the doc ID
-                    await contactsRef.doc(bUid).set({
-                      'email': email,
-                      'uid': bUid,
-                      'createdAt': FieldValue.serverTimestamp(),
-                    });
+                  // If this contact is a PHONE contact, just store phone.
+                  if (isPhone) {
+                    // If adding new (docId == null), generate new doc
+                    if (docId == null) {
+                      await contactsRef.add({
+                        'type': 'phone',
+                        'phone': textVal,
+                        'createdAt': FieldValue.serverTimestamp(),
+                      });
+                    } else {
+                      // editing existing doc
+                      await contactsRef.doc(docId).update({
+                        'type': 'phone',
+                        'phone': textVal,
+                      });
+                    }
                   } else {
-                    // EDIT => if the doc ID was originally that bUid, we can update
-                    // but if we want to rename doc IDs, we must handle carefully
-                    // simpler approach: just update the existing doc
-                    await contactsRef.doc(docId).update({
-                      'email': email,
-                      'uid': bUid,
-                    });
+                    // EMAIL logic:
+                    // 1) Look up user doc with that email (lowercased if needed)
+                    final query = await FirebaseFirestore.instance
+                        .collection('users')
+                        .where('email', isEqualTo: textVal)
+                        .limit(1)
+                        .get();
+
+                    if (query.docs.isEmpty) {
+                      // no user found => store anyway as a normal "unregistered" email contact,
+                      // or show an error. It's up to you. If you want to store,
+                      // just remove the user doc logic:
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('No user found with that email.'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                      return; // stop saving
+                    }
+
+                    final targetDoc = query.docs.first;
+                    final bUid = targetDoc.id; // their user UID
+
+                    if (docId == null) {
+                      await contactsRef.doc(bUid).set({
+                        'type': 'email',
+                        'email': textVal,
+                        'uid': bUid,
+                        'createdAt': FieldValue.serverTimestamp(),
+                      });
+                    } else {
+                      await contactsRef.doc(docId).update({
+                        'type': 'email',
+                        'email': textVal,
+                        'uid': bUid,
+                      });
+                    }
                   }
                 } catch (e) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -181,19 +214,60 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Emergency Contacts',
-            style: TextStyle(color: Colors.black)),
+        title: const Text(
+          'Emergency Contacts',
+          style: TextStyle(color: Colors.black),
+        ),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
         iconTheme: const IconThemeData(color: Colors.black),
       ),
+
+      // Two options for floatingActionButton:
+      //  1) use a PopupMenuButton
+      //  2) add multiple FABs using a SpeedDial package
+      // For simplicity, let's add a single FAB that shows a menu:
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showEmailDialog(),
         child: const Icon(Icons.add),
+        onPressed: () {
+          // Show a bottom sheet or a simple dialog to choose:
+          showModalBottomSheet(
+            context: context,
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+            ),
+            builder: (ctx) {
+              return SizedBox(
+                height: 140,
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.phone),
+                      title: const Text('Add Phone Contact'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showAddContactDialog(isPhone: true);
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.email),
+                      title: const Text('Add Email Contact'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showAddContactDialog(isPhone: false);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
       ),
+
       body: Container(
-        // Gradient background
+        // Gradient background (optional)
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
@@ -220,7 +294,9 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                   }
                   final docs = snapshot.data!.docs;
                   if (docs.isEmpty) {
-                    return const Center(child: Text('No contacts. Add one!'));
+                    return const Center(
+                      child: Text('No contacts. Add one!'),
+                    );
                   }
 
                   return ListView.builder(
@@ -229,8 +305,25 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                       final doc = docs[index];
                       final docId = doc.id;
                       final data = doc.data() as Map<String, dynamic>;
-                      final email = data['email'] ?? 'no-email@example.com';
-                      final uid = data['uid'] ?? docId;
+
+                      final contactType = data['type'] ?? 'unknown';
+                      final email = data['email'] as String?;
+                      final phone = data['phone'] as String?;
+                      final uid = data['uid'] as String?; // For email contacts
+
+                      // Build display text
+                      String mainText = 'N/A';
+                      String subtitle = '';
+                      if (contactType == 'phone' && phone != null) {
+                        mainText = phone;
+                        subtitle = '(Phone)';
+                      } else if (contactType == 'email' && email != null) {
+                        mainText = email;
+                        subtitle = '(Email)';
+                        if (uid != null) {
+                          subtitle += ' - UID: $uid';
+                        }
+                      }
 
                       return Card(
                         elevation: 4,
@@ -242,13 +335,24 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                           borderRadius: BorderRadius.circular(16),
                         ),
                         child: ListTile(
-                          title: Text(email),
-                          subtitle: Text('UID: $uid'),
+                          title: Text(mainText),
+                          subtitle: Text(subtitle),
                           trailing: PopupMenuButton<String>(
                             onSelected: (value) {
                               if (value == 'edit') {
-                                _showEmailDialog(
-                                    docId: docId, initialEmail: email);
+                                if (contactType == 'phone') {
+                                  _showAddContactDialog(
+                                    docId: docId,
+                                    isPhone: true,
+                                    initialValue: phone,
+                                  );
+                                } else {
+                                  _showAddContactDialog(
+                                    docId: docId,
+                                    isPhone: false,
+                                    initialValue: email,
+                                  );
+                                }
                               } else if (value == 'delete') {
                                 _deleteContact(docId);
                               }

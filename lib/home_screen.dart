@@ -21,7 +21,10 @@ import 'package:flutter_fft/flutter_fft.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
-// 1) Import the SMS service
+import 'package:telephony/telephony.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+// Import your new SMS service file
 import 'stage_sms_service.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -32,39 +35,31 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // ---------- Existing State ----------
   String? _latestRecordingUrl;
 
-  // Speech & Alert Mode
   bool _alertModeOn = false;
   bool _isListening = false;
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _speechAvailable = false;
 
-  // Stage Logic
   int? _activeStageNumber;
   int _timeLeftSec = 0;
   Timer? _stageTimer;
 
-  // Times from Firestore
   int _stage1Time = 10;
   int _stage2Time = 300;
-
-  // Custom Trigger Phrase
   String _triggerPhrase = "help";
 
-  // Location updates
   Timer? _locationUpdateTimer;
   final _locService = LocationService();
 
-  // Motion detection => only if alertMode is ON
   late final MotionDetectionService _motionService;
   bool _motionActive = false;
 
-  // Camera
   CameraController? _cameraController;
   bool _isRecording = false;
 
-  // flutter_fft
   final FlutterFft _flutterFft = FlutterFft();
   bool _isPitchDetectionActive = false;
   bool? _isRecordingFft;
@@ -72,7 +67,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _note;
   int? _octave;
 
-  // Timer for the speech session
   Timer? _speechTimeoutTimer;
 
   @override
@@ -105,7 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // ------------------ Motion Trigger ------------------
+  // -------------- MOTION DETECTION --------------
   void _handleMotionDetected() {
     if (!_alertModeOn) return;
     if (_activeStageNumber == null || _activeStageNumber! < 1) {
@@ -113,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ------------------ Speech Setup ------------------
+  // -------------- SPEECH SETUP --------------
   Future<void> _initSpeech() async {
     bool available = await _speech.initialize(
       onStatus: (status) => debugPrint('Speech status: $status'),
@@ -164,7 +158,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onSpeechResult(dynamic result) {
     try {
-      // Only process final results (partialResults=false ensures this too)
       if (!result.finalResult) {
         debugPrint("Skipping partial result: ${result.recognizedWords}");
         return;
@@ -173,7 +166,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final recognized = (result.recognizedWords?.toLowerCase() ?? '').trim();
       debugPrint("=== Final recognized text: $recognized");
 
-      // End STT
       if (_isListening) {
         _speechTimeoutTimer?.cancel();
         _stopListeningForHelp();
@@ -186,7 +178,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _activateStage(3, mode: 'voice');
       }
 
-      // Send recognized text to Gemini
+      // Gemini AI example
       _sendToGeminiAI(recognized, 0.0, 0.0, 0.0);
 
       // Start pitch detection
@@ -196,9 +188,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ------------------ flutter_fft approach ------------------
+  // -------------- PITCH DETECTION --------------
   Future<void> _startPitchDetection() async {
-    debugPrint("== Starting pitch detection ==");
     if (_isPitchDetectionActive) {
       debugPrint("Pitch detection already active. Skipping start.");
       return;
@@ -212,9 +203,7 @@ class _HomeScreenState extends State<HomeScreen> {
     debugPrint("Starting flutter_fft recorder...");
     await _flutterFft.startRecorder();
     debugPrint("Recorder started with flutter_fft.");
-    setState(() {
-      _isRecordingFft = _flutterFft.getIsRecording;
-    });
+    setState(() => _isRecordingFft = _flutterFft.getIsRecording);
 
     _flutterFft.onRecorderStateChanged.listen((data) {
       if (data is List && data.length >= 6) {
@@ -238,9 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_flutterFft.getIsRecording == true) {
       debugPrint("Stopping flutter_fft recorder...");
       await _flutterFft.stopRecorder();
-      setState(() {
-        _isRecordingFft = _flutterFft.getIsRecording;
-      });
+      setState(() => _isRecordingFft = _flutterFft.getIsRecording);
     }
     _isPitchDetectionActive = false;
   }
@@ -343,7 +330,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     }
   }
 
-  // ------------------ Location & Stage Logic ------------------
+  // -------------- LOCATION & STAGE LOGIC --------------
   Future<void> _checkLocationService() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
@@ -389,8 +376,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     }
   }
 
-  /// Activate a particular stage (1,2,3).
-  /// If stage 2 or 3 => sends SMS from the separate StageSmsService.
+  /// Called from UI to switch to Stage1, Stage2, or Stage3
   Future<void> _activateStage(int stageNumber, {String mode = 'manual'}) async {
     _stageTimer?.cancel();
     _locationUpdateTimer?.cancel();
@@ -401,7 +387,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     final threatRef =
         FirebaseFirestore.instance.collection('threats').doc(user.uid);
 
-    // If stage≥2 => remove leftover recording URL from old session
+    // If stage≥2 => remove leftover recording URL
     if (stageNumber >= 2) {
       await threatRef.set({
         'recordingUrl': FieldValue.delete(),
@@ -416,7 +402,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     final userData = userDoc.data() ?? {};
     final userName = userData['fullName'] ?? 'Unknown';
 
-    // Mark Firestore doc
+    // Mark Firestore doc with the new stage
     await threatRef.set({
       'userId': user.uid,
       'userName': userName,
@@ -426,15 +412,13 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    // update local state
     setState(() => _activeStageNumber = stageNumber);
 
-    // Handle stage logic
     if (stageNumber == 1) {
+      // Stage1 => short timer => auto proceed to Stage2
       _startStage1Timer();
       _stopRecordingCamera();
     } else if (stageNumber == 2) {
-      // Stage 2 => approximate location + record + SMS
       _startStage2Timer();
       _startLocationUpdates(2);
       _startRecordingCamera();
@@ -442,7 +426,6 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
       final coords = await _locService.getLocation(2);
       if (coords != null) {
         final (lat, lng) = coords;
-        // Call our separate SMS service
         await StageSmsService.sendStageSMS(
           stageNumber: 2,
           lat: lat,
@@ -451,7 +434,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
         );
       }
     } else if (stageNumber == 3) {
-      // Stage 3 => precise location + record + SMS
+      // Stage3 => precise location + camera + SMS
       _startLocationUpdates(3);
       _startRecordingCamera();
 
@@ -502,9 +485,9 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     final lng = data['lng'] as double? ?? 0.0;
     final docRecUrl = data['recordingUrl'] as String?;
     final activationMode = data['activationMode'] as String? ?? 'manual';
-
     final finalUrl = _latestRecordingUrl ?? docRecUrl;
 
+    // If oldStage≥2 => store in "history" sub-collection
     if (oldStage >= 2) {
       await threatRef.collection('history').add({
         'stageNumber': oldStage,
@@ -517,6 +500,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
       });
     }
 
+    // Reset doc
     await threatRef.set({
       'isActive': false,
       'stageNumber': 0,
@@ -595,7 +579,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     }, SetOptions(merge: true));
   }
 
-  // ------------------ Camera / Video Recording ------------------
+  // -------------- CAMERA / RECORDING --------------
   Future<void> _initCameraIfNeeded() async {
     if (_cameraController != null) return;
     final cameras = await availableCameras();
@@ -684,7 +668,7 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
     return null;
   }
 
-  // ------------------ UI ------------------
+  // -------------- UI BUILD --------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -692,7 +676,10 @@ Return a JSON: { "distress": true/false, "explanation": "..." }
         title: const Text(
           'DurgaWatch',
           style: TextStyle(
-              fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black),
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+            color: Colors.black,
+          ),
         ),
         centerTitle: true,
         elevation: 0,
