@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![DurgaWatch Logo](assets/images/logo.png)
-
 **A Smart Personal Safety Application with Multi-Stage Alert System**
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.0+-02569B?logo=flutter)](https://flutter.dev)
